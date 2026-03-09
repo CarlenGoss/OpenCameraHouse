@@ -2,13 +2,19 @@ package com.carlengosez.open_camera_server
 
 import android.Manifest
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.MediaStore
+import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -64,8 +70,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // ESTA ES LA LÍNEA MÁGICA: Mantiene la pantalla encendida y la app activa
-        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Mantiene la pantalla encendida y la app activa
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         setContentView(R.layout.activity_main)
 
@@ -76,8 +82,12 @@ class MainActivity : AppCompatActivity() {
         if (allPermissionsGranted()) startCamera() else requestPermissions()
 
         btnRecord.setOnClickListener { toggleSystem() }
-        val videoServer = VideoServer()
-        videoServer.startServer()
+
+        // Iniciar Servidor de Video
+        VideoServer().startServer()
+
+        // Ejecutamos el blindaje de batería al iniciar la app
+        disableBatteryOptimization()
     }
 
     private fun toggleSystem() {
@@ -86,7 +96,7 @@ class MainActivity : AppCompatActivity() {
                 // Encendemos el sistema: Pasa a modo ARMADO (Vigilando)
                 currentState = SystemState.ARMED
                 btnRecord.text = "Sistema Armado (Detectando...)"
-                btnRecord.setBackgroundColor(android.graphics.Color.parseColor("#FFA500")) // Naranja
+                btnRecord.setBackgroundColor(Color.parseColor("#FFA500")) // Naranja
                 Toast.makeText(this, "Sensor de movimiento activado", Toast.LENGTH_SHORT).show()
             }
             SystemState.ARMED, SystemState.RECORDING -> {
@@ -95,7 +105,7 @@ class MainActivity : AppCompatActivity() {
                 recording?.stop()
                 autoStopHandler.removeCallbacks(autoStopRunnable)
                 btnRecord.text = "Iniciar Sistema"
-                btnRecord.setBackgroundColor(android.graphics.Color.RED)
+                btnRecord.setBackgroundColor(Color.RED)
             }
         }
     }
@@ -108,7 +118,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 currentState = SystemState.RECORDING
                 btnRecord.text = "Grabando por Movimiento..."
-                btnRecord.setBackgroundColor(android.graphics.Color.parseColor("#008000")) // Verde
+                btnRecord.setBackgroundColor(Color.parseColor("#008000")) // Verde
             }
             startRecordingChunk()
         }
@@ -126,12 +136,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val mediaStoreOutputOptions = MediaStoreOutputOptions.Builder(contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
-            .setContentValues(contentValues).build()
+        val mediaStoreOutputOptions = MediaStoreOutputOptions.Builder(
+            contentResolver, 
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        ).setContentValues(contentValues).build()
 
         recording = videoCapture.output
             .prepareRecording(this, mediaStoreOutputOptions)
-            .apply { if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) withAudioEnabled() }
+            .apply {
+                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    withAudioEnabled()
+                }
+            }
             .start(ContextCompat.getMainExecutor(this)) { recordEvent ->
                 when(recordEvent) {
                     is VideoRecordEvent.Start -> {
@@ -147,7 +163,7 @@ class MainActivity : AppCompatActivity() {
                             runOnUiThread {
                                 currentState = SystemState.ARMED
                                 btnRecord.text = "Sistema Armado (Detectando...)"
-                                btnRecord.setBackgroundColor(android.graphics.Color.parseColor("#FFA500"))
+                                btnRecord.setBackgroundColor(Color.parseColor("#FFA500"))
                             }
                         }
                     }
@@ -165,7 +181,7 @@ class MainActivity : AppCompatActivity() {
             val recorder = Recorder.Builder().setQualitySelector(QualitySelector.from(Quality.HD)).build()
             videoCapture = VideoCapture.withOutput(recorder)
 
-            // 2. Configuramos el Analizador de Imagen (NUEVO)
+            // 2. Configuramos el Analizador de Imagen
             imageAnalyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST) // Evita que el teléfono se congele
                 .build()
@@ -188,17 +204,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestPermissions() = activityResultLauncher.launch(REQUIRED_PERMISSIONS)
-    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all { ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED }
+    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all { 
+        ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED 
+    }
 
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
         autoStopHandler.removeCallbacks(autoStopRunnable)
-    }
-
-    companion object {
-        private const val TAG = "CameraServerApp"
-        private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     }
 
     // --- ALGORITMO DE DETECCIÓN DE MOVIMIENTO ---
@@ -238,5 +251,25 @@ class MainActivity : AppCompatActivity() {
             }
             image.close() // ¡MUY IMPORTANTE cerrar la imagen para no bloquear la cámara!
         }
+    }
+
+    // --- BLINDAJE DE BATERÍA ---
+    private fun disableBatteryOptimization() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            val intent = Intent().apply {
+                action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        }
+    }
+
+    companion object {
+        private const val TAG = "CameraServerApp"
+        private val REQUIRED_PERMISSIONS = arrayOf(
+            Manifest.permission.CAMERA, 
+            Manifest.permission.RECORD_AUDIO
+        )
     }
 }
