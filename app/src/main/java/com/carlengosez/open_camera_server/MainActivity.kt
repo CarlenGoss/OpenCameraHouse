@@ -76,6 +76,8 @@ class MainActivity : AppCompatActivity() {
         if (allPermissionsGranted()) startCamera() else requestPermissions()
 
         btnRecord.setOnClickListener { toggleSystem() }
+        val videoServer = VideoServer()
+        videoServer.startServer()
     }
 
     private fun toggleSystem() {
